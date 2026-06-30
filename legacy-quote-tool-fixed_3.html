@@ -1,0 +1,421 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>Legacy Sprinklers — Quote Builder</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0;}
+  body{background:#0f1117;font-family:'Inter','Helvetica Neue',Arial,sans-serif;color:#f0f0f0;min-height:100vh;}
+  input,select,textarea{font-family:inherit;}
+  input:focus,select:focus,textarea:focus{border-color:#1e6b3c !important;outline:none;}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const {useState,useMemo} = React;
+
+// ── CONSTANTS ─────────────────────────────────────
+const LABOR_RATE      = 97;     // $/hr pricing input (revenue side)
+const LABOR_MULT      = 1.30;   // labor markup multiplier
+const MAT_COST_MULT   = 1.35;   // materials markup
+const MARGIN          = 0.50;   // target gross margin
+const TRENCH_RATE_LF  = 22;     // $/linear ft customer price
+const TRENCH_COST_LF  = 8;      // $/linear ft true internal cost ($6–10 midpoint)
+const VERBAL_MULT     = 1.35;   // verbal anchor multiplier
+const TRENCH_FAST     = 15;     // ft/hr best case production
+const TRENCH_SLOW     = 9;      // ft/hr worst case production
+// Cost side — fully burdened rates
+const LEAD_RATE       = 88.00;  // $/hr lead tech — wages + payroll burden + overhead (all-in)
+const ERIC_RATE_2TECH = 25.62;  // $/hr Eric as 2nd tech — wages + burden only (overhead covered by lead)
+const OVERHEAD_RATE   = 34.16;  // $/hr overhead component (shown separately in breakdown)
+// ─────────────────────────────────────────────────
+
+function calc(hMax, matEst, trenchFt, twoTechs){
+  const hrs  = parseFloat(hMax)||0;
+  const mat  = parseFloat(matEst)||0;
+  const ft   = parseFloat(trenchFt)||0;
+
+  // ── CUSTOMER PRICE (unchanged — pricing formula doesn't change with headcount) ──
+  const trenchRevenue  = ft * TRENCH_RATE_LF;
+  const laborMat       = ((hrs * LABOR_MULT * LABOR_RATE) + (mat * MAT_COST_MULT)) / MARGIN;
+  const customerPrice  = trenchRevenue + laborMat;
+
+  // ── INTERNAL COST BREAKDOWN ──
+  // Lead tech: fully burdened $88/hr (wages + payroll burden + overhead)
+  // Eric as 2nd tech: $25.62/hr wages+burden only — overhead already covered by lead rate
+  // Overhead: $34.16/hr per SITE hour, shown separately (doesn't scale with headcount)
+  const leadLaborCost  = LEAD_RATE * hrs;
+  const ericLaborCost  = twoTechs ? (ERIC_RATE_2TECH * hrs) : 0;
+  const overheadCost   = OVERHEAD_RATE * hrs;  // site-hours, not man-hours
+  const trenchCost     = ft * TRENCH_COST_LF;
+  const matCost        = mat;
+  const totalCost      = leadLaborCost + ericLaborCost + overheadCost + trenchCost + matCost;
+  const profit         = customerPrice - totalCost;
+  const profitPct      = customerPrice > 0 ? (profit / customerPrice) * 100 : 0;
+
+  return {customerPrice, leadLaborCost, ericLaborCost, overheadCost, trenchCost, matCost, totalCost, profit, profitPct, trenchRevenue, twoTechs};
+}
+
+function trenchCheck(hoursMax, trenchFt){
+  const ft  = parseFloat(trenchFt)||0;
+  const hrs = parseFloat(hoursMax)||0;
+  if(ft===0||hrs===0) return null;
+  const minHrs = ft / TRENCH_FAST;
+  const maxHrs = ft / TRENCH_SLOW;
+  if(hrs < minHrs) return {level:"error", msg:`${ft} ft of trenching needs at least ${minHrs.toFixed(1)} hrs at best pace — ${hrs} hrs is too low even before other work.`};
+  if(hrs < maxHrs) return {level:"warn",  msg:`${ft} ft could take up to ${maxHrs.toFixed(1)} hrs in hard soil. Confirm worst-case accounts for this.`};
+  return {level:"ok", msg:`Hours check out against trenching footage.`};
+}
+
+function fmt(v,dec=0){
+  if(!v&&v!==0) return "—";
+  return "$"+Number(v).toFixed(dec).replace(/\B(?=(\d{3})+(?!\d))/g,",");
+}
+function pct(v){ return Number(v).toFixed(1)+"%" }
+
+const inp={width:"100%",background:"#0f1117",border:"1px solid #1e2a3a",borderRadius:8,padding:"10px 12px",color:"#f0f0f0",fontSize:15,outline:"none",boxSizing:"border-box"};
+const btnBase={padding:"14px 18px",border:"none",borderRadius:10,fontSize:15,fontWeight:700,cursor:"pointer",width:"100%",marginTop:8};
+
+function SL({children}){
+  return <div style={{fontSize:11,color:"#1e6b3c",fontWeight:700,letterSpacing:"0.1em",textTransform:"uppercase",marginBottom:12,paddingBottom:8,borderBottom:"1px solid #1e2a3a"}}>{children}</div>;
+}
+function FL({children}){
+  return <div style={{fontSize:11,color:"#6b7a8d",marginBottom:6,textTransform:"uppercase",letterSpacing:"0.06em"}}>{children}</div>;
+}
+function Row({label,value,color,bold}){
+  return(
+    <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"8px 0",borderBottom:"1px solid #1e2a3a"}}>
+      <span style={{fontSize:13,color:"#8a9ab0"}}>{label}</span>
+      <span style={{fontSize:bold?18:15,fontWeight:bold?800:600,color:color||"#c8d0da"}}>{value}</span>
+    </div>
+  );
+}
+
+function StepBar({current,goTo}){
+  const steps=["Inputs","Breakdown","Copy"];
+  return(
+    <div style={{display:"flex",alignItems:"center",padding:"12px 16px",background:"#0f1117",borderBottom:"1px solid #1e2a3a"}}>
+      {steps.map((s,i)=>{
+        const num=i+1; const active=num===current; const done=num<current;
+        return(
+          <React.Fragment key={s}>
+            <div onClick={()=>done&&goTo(num)} style={{display:"flex",alignItems:"center",gap:6,flexShrink:0,cursor:done?"pointer":"default"}}>
+              <div style={{width:22,height:22,borderRadius:"50%",display:"flex",alignItems:"center",justifyContent:"center",fontSize:11,fontWeight:700,
+                background:done||active?"#1e6b3c":"#1e2a3a",color:done||active?"#fff":"#3a4a5a",
+                border:active?"2px solid #2ecc71":done?"2px solid #2ecc71":"2px solid transparent"}}>
+                {done?"✓":num}
+              </div>
+              <div style={{fontSize:11,color:active?"#f0f0f0":done?"#2ecc71":"#3a4a5a",fontWeight:active?700:400,whiteSpace:"nowrap"}}>{s}</div>
+            </div>
+            {i<steps.length-1&&<div style={{flex:1,height:1,background:"#1e2a3a",margin:"0 8px"}}/>}
+          </React.Fragment>
+        );
+      })}
+    </div>
+  );
+}
+
+function CopyBlock({label,text}){
+  const [copied,setCopied]=useState(false);
+  const copy=()=>{
+    const el=document.createElement("textarea");el.value=text;el.style.position="fixed";el.style.opacity="0";
+    document.body.appendChild(el);el.focus();el.select();
+    try{document.execCommand("copy");}catch(e){}
+    document.body.removeChild(el);
+    setCopied(true);setTimeout(()=>setCopied(false),2000);
+  };
+  return(
+    <div style={{marginBottom:14}}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}>
+        <div style={{fontSize:11,color:"#6b7a8d",textTransform:"uppercase",letterSpacing:"0.06em"}}>{label}</div>
+        <button onClick={copy} style={{background:copied?"#0d3d20":"#1e2a3a",border:copied?"1px solid #2ecc71":"1px solid #2a3a4a",color:copied?"#2ecc71":"#f0f0f0",borderRadius:6,padding:"5px 14px",fontSize:13,cursor:"pointer",fontWeight:600}}>
+          {copied?"Copied!":"Copy"}
+        </button>
+      </div>
+      <div style={{background:"#0f1117",border:"1px solid #1e2a3a",borderRadius:8,padding:"12px 14px",fontSize:14,color:"#c8d0da",lineHeight:1.75,whiteSpace:"pre-wrap",wordBreak:"break-word"}}>{text}</div>
+    </div>
+  );
+}
+
+function App(){
+  const [step,setStep]         = useState(1);
+  const [hoursMin,setHoursMin] = useState("");
+  const [hoursMax,setHoursMax] = useState("");
+  const [matEst,setMatEst]     = useState("");
+  const [trenchFt,setTrenchFt] = useState("");
+  const [equipment,setEquipment] = useState("");
+  const [twoTechs,setTwoTechs] = useState(false);
+  const [reviewTitle,setReviewTitle] = useState("");
+  const [reviewDesc,setReviewDesc]   = useState("");
+
+  const r     = useMemo(()=>calc(hoursMax,matEst,trenchFt,twoTechs),[hoursMax,matEst,trenchFt,twoTechs]);
+  const check = useMemo(()=>trenchCheck(hoursMax,trenchFt),[hoursMax,trenchFt]);
+  const verbalAnchor = hoursMax&&matEst ? Math.ceil(r.customerPrice*VERBAL_MULT/500)*500 : 0;
+
+  const hasPrice   = hoursMax && matEst;
+  const canProceed = hoursMin && hoursMax && matEst && check?.level !== "error";
+
+  const buildTitle = () => {
+    const ft = parseFloat(trenchFt)||0;
+    if(ft>0 && equipment) return `Irrigation System Repair — ${ft}ft Trenching (${equipment})`;
+    if(ft>0) return `Irrigation System Repair & Trenching`;
+    return "Irrigation System Service & Repair";
+  };
+
+  const buildDesc = () => {
+    const ft = parseFloat(trenchFt)||0;
+    let d = "";
+    if(ft>0){
+      d = `This job requires ${ft} linear feet of trenching`;
+      if(equipment&&equipment!=="None") d += ` using a ${equipment.toLowerCase()}`;
+      d += `. Once excavated, all necessary repairs will be completed, the system pressure-tested, and the trench properly backfilled. Trenching jobs involve unknowns underground — we price conservatively so there are no surprises once we're in the ground. `;
+    } else {
+      d = "Your irrigation system will be diagnosed, repaired, and restored to full working order with reliable zone coverage and pressure. ";
+    }
+    d += "All work is completed to manufacturer specifications and backed by Legacy Sprinklers' quality standard.";
+    return d;
+  };
+
+  const goToBreakdown = () => {
+    setReviewTitle(buildTitle());
+    setReviewDesc(buildDesc());
+    setStep(2);
+  };
+
+  const reset = () => {
+    setStep(1);setHoursMin("");setHoursMax("");
+    setMatEst("");setTrenchFt("");setEquipment("");setTwoTechs(false);
+    setReviewTitle("");setReviewDesc("");
+  };
+
+  return(
+    <div style={{minHeight:"100vh",background:"#0f1117",paddingBottom:60}}>
+
+      {/* Header */}
+      <div style={{background:"#161b27",borderBottom:"2px solid #1e6b3c",padding:"16px 20px",display:"flex",alignItems:"center",gap:12,position:"sticky",top:0,zIndex:10}}>
+        <div style={{width:32,height:32,background:"#1e6b3c",borderRadius:8,display:"flex",alignItems:"center",justifyContent:"center",fontSize:15,flexShrink:0}}>💧</div>
+        <div>
+          <div style={{fontWeight:700,fontSize:14}}>LEGACY SPRINKLERS</div>
+          <div style={{fontSize:10,color:"#6b7a8d",letterSpacing:"0.08em",textTransform:"uppercase"}}>Office Quote Builder</div>
+        </div>
+      </div>
+
+      <StepBar current={step} goTo={n=>n<step&&setStep(n)}/>
+
+      <div style={{maxWidth:500,margin:"0 auto",padding:"20px 16px"}}>
+
+        {/* ── STEP 1: INPUTS ── */}
+        {step===1&&(
+          <div>
+
+            {/* Hours */}
+            <div style={{marginBottom:24}}>
+              <SL>JOB HOURS (FROM TECH)</SL>
+              <div style={{fontSize:12,color:"#3a4a5a",marginBottom:12,lineHeight:1.6}}>Get these from the tech. Best case = everything smooth. Worst case = hard soil, surprises, access issues. Price is built on worst case.</div>
+              <div style={{display:"flex",gap:10}}>
+                <div style={{flex:1}}>
+                  <FL>Best Case (hrs)</FL>
+                  <input type="number" min="0" step="0.5" value={hoursMin} onChange={e=>setHoursMin(e.target.value)} placeholder="e.g. 6" style={{...inp,fontSize:24,fontWeight:700,textAlign:"center"}}/>
+                </div>
+                <div style={{flex:1}}>
+                  <FL>Worst Case (hrs)</FL>
+                  <input type="number" min="0" step="0.5" value={hoursMax} onChange={e=>setHoursMax(e.target.value)} placeholder="e.g. 14" style={{...inp,fontSize:24,fontWeight:700,textAlign:"center"}}/>
+                </div>
+              </div>
+            </div>
+
+            {/* Tech count */}
+            <div style={{marginBottom:24}}>
+              <SL>CREW SIZE</SL>
+              <div style={{fontSize:12,color:"#3a4a5a",marginBottom:10,lineHeight:1.6}}>Affects internal cost only — customer price doesn't change. Eric as 2nd tech adds his wage cost but not a second overhead layer.</div>
+              <div style={{display:"flex",gap:8}}>
+                {[{label:"1 Tech",val:false},{label:"2 Techs (+ Eric)",val:true}].map(opt=>{
+                  const on=twoTechs===opt.val;
+                  return(
+                    <button key={opt.label} onClick={()=>setTwoTechs(opt.val)} style={{
+                      flex:1,padding:"12px 14px",borderRadius:8,fontSize:14,fontWeight:700,cursor:"pointer",
+                      background:on?"#0d3d20":"#161b27",border:on?"1px solid #2ecc71":"1px solid #1e2a3a",
+                      color:on?"#2ecc71":"#8a9ab0"}}>
+                      {on?"✓ ":""}{opt.label}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Materials */}
+            <div style={{marginBottom:24}}>
+              <SL>MATERIALS ESTIMATE (FROM TECH)</SL>
+              <div style={{fontSize:12,color:"#3a4a5a",marginBottom:8,lineHeight:1.6}}>Tech's estimate of parts cost from supply. Markup applied automatically.</div>
+              <div style={{display:"flex",alignItems:"center",gap:8}}>
+                <span style={{color:"#6b7a8d",fontSize:24,fontWeight:700,flexShrink:0}}>$</span>
+                <input type="number" min="0" step="25" value={matEst} onChange={e=>setMatEst(e.target.value)} placeholder="e.g. 450" style={{...inp,fontSize:24,fontWeight:700,textAlign:"center"}}/>
+              </div>
+            </div>
+
+            {/* Trenching */}
+            <div style={{marginBottom:24}}>
+              <SL>TRENCHING</SL>
+              <div style={{fontSize:12,color:"#3a4a5a",marginBottom:8,lineHeight:1.6}}>
+                Linear feet if trenching required. Priced at ${TRENCH_RATE_LF}/ft. Tool will flag if hours don't support the footage ({TRENCH_SLOW}–{TRENCH_FAST} ft/hr).
+              </div>
+              <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:12}}>
+                <input type="number" min="0" step="5" value={trenchFt} onChange={e=>setTrenchFt(e.target.value)} placeholder="0" style={{...inp,width:110,fontSize:24,fontWeight:700,textAlign:"center"}}/>
+                <span style={{fontSize:13,color:"#6b7a8d"}}>linear ft</span>
+                {trenchFt>0&&<div style={{fontSize:13,color:"#4a9a6a",fontWeight:600,marginLeft:"auto"}}>{fmt(parseFloat(trenchFt)*TRENCH_RATE_LF)}</div>}
+              </div>
+
+              {/* Sanity check */}
+              {check&&trenchFt>0&&hoursMax&&(
+                <div style={{borderRadius:8,padding:"12px 14px",marginBottom:12,
+                  background:check.level==="error"?"#2a0a0a":check.level==="warn"?"#1a1500":"#0d1f14",
+                  border:`1px solid ${check.level==="error"?"#8b1a1a":check.level==="warn"?"#6b5a00":"#1e6b3c"}`}}>
+                  <div style={{fontSize:12,fontWeight:700,marginBottom:4,color:check.level==="error"?"#e74c3c":check.level==="warn"?"#f0d060":"#2ecc71"}}>
+                    {check.level==="error"?"⚠ Hours too low — fix before continuing":check.level==="warn"?"⚡ Double-check worst-case hours":"✓ Hours look good"}
+                  </div>
+                  <div style={{fontSize:12,lineHeight:1.6,color:check.level==="error"?"#c0604a":check.level==="warn"?"#b09040":"#4a9a6a"}}>{check.msg}</div>
+                </div>
+              )}
+
+              <FL>Equipment Needed</FL>
+              <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+                {["None","Mini Excavator","Trencher"].map(eq=>{
+                  const on=equipment===eq||(eq==="None"&&!equipment);
+                  return(
+                    <button key={eq} onClick={()=>setEquipment(eq==="None"?"":eq)} style={{
+                      padding:"9px 14px",borderRadius:8,fontSize:13,fontWeight:600,cursor:"pointer",
+                      background:on?"#0d3d20":"#161b27",border:on?"1px solid #2ecc71":"1px solid #1e2a3a",
+                      color:on?"#2ecc71":"#8a9ab0"}}>
+                      {on?"✓ ":""}{eq}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Live price preview */}
+            {hasPrice&&(
+              <div style={{marginBottom:20}}>
+                <div style={{background:"#0d1f14",border:"1px solid #1e6b3c",borderRadius:10,padding:"16px",marginBottom:10,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                  <div>
+                    <div style={{fontSize:11,color:"#4a9a6a",textTransform:"uppercase",letterSpacing:"0.06em",marginBottom:4}}>Customer Price</div>
+                    <div style={{fontSize:40,fontWeight:800,color:"#2ecc71",letterSpacing:"-0.02em"}}>{fmt(r.customerPrice)}</div>
+                  </div>
+                  <div style={{textAlign:"right",fontSize:12,color:"#4a9a6a",lineHeight:2.2}}>
+                    <div>{hoursMin}–{hoursMax} hrs</div>
+                    {trenchFt>0&&<div>{trenchFt} ft trench</div>}
+                    <div style={{color: r.profitPct>=50?"#2ecc71":r.profitPct>=40?"#f0d060":"#e74c3c",fontWeight:700}}>{pct(r.profitPct)} margin</div>
+                  </div>
+                </div>
+                {verbalAnchor>0&&(
+                  <div style={{background:"#1a1500",border:"1px solid #6b5a00",borderRadius:10,padding:"14px 16px"}}>
+                    <div style={{fontSize:11,color:"#f0d060",fontWeight:700,textTransform:"uppercase",letterSpacing:"0.06em",marginBottom:6}}>Tell the customer before you leave</div>
+                    <div style={{fontSize:28,fontWeight:800,color:"#f0d060"}}>Expect around {fmt(verbalAnchor)}+</div>
+                    <div style={{fontSize:12,color:"#b09040",marginTop:6}}>Formal quote will come in below this. That's the close.</div>
+                  </div>
+                )}
+              </div>
+            )}
+
+            <button onClick={goToBreakdown} disabled={!canProceed}
+              style={{...btnBase,background:canProceed?"#1e6b3c":"#1e2a3a",color:canProceed?"#fff":"#3a4a5a"}}>
+              {check?.level==="error"?"Fix hours to continue":"See Full Breakdown →"}
+            </button>
+          </div>
+        )}
+
+        {/* ── STEP 2: BREAKDOWN ── */}
+        {step===2&&(
+          <div>
+
+            {/* Customer price */}
+            <div style={{background:"#0d1f14",border:"2px solid #2ecc71",borderRadius:12,padding:"20px",marginBottom:20,display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:12}}>
+              <div>
+                <div style={{fontSize:11,color:"#4a9a6a",textTransform:"uppercase",letterSpacing:"0.06em",marginBottom:4}}>Customer Price</div>
+                <div style={{fontSize:44,fontWeight:800,color:"#2ecc71",letterSpacing:"-0.02em"}}>{fmt(r.customerPrice)}</div>
+              </div>
+              <div style={{textAlign:"right"}}>
+                <div style={{fontSize:11,color:"#4a9a6a",textTransform:"uppercase",letterSpacing:"0.06em",marginBottom:4}}>Gross Margin</div>
+                <div style={{fontSize:32,fontWeight:800,color: r.profitPct>=50?"#2ecc71":r.profitPct>=40?"#f0d060":"#e74c3c"}}>{pct(r.profitPct)}</div>
+              </div>
+            </div>
+
+            {/* Revenue breakdown */}
+            <div style={{background:"#161b27",border:"1px solid #1e2a3a",borderRadius:10,padding:"16px",marginBottom:16}}>
+              <SL>REVENUE BREAKDOWN</SL>
+              <Row label="Labor & Materials (margin-loaded)" value={fmt(r.customerPrice - r.trenchRevenue)}/>
+              {r.trenchRevenue>0&&<Row label={`Trenching — ${trenchFt} ft @ $${TRENCH_RATE_LF}/ft`} value={fmt(r.trenchRevenue)}/>}
+              <Row label="Total Customer Price" value={fmt(r.customerPrice)} color="#2ecc71" bold/>
+            </div>
+
+            {/* Cost breakdown */}
+            <div style={{background:"#161b27",border:"1px solid #1e2a3a",borderRadius:10,padding:"16px",marginBottom:16}}>
+              <SL>INTERNAL COST BREAKDOWN</SL>
+              <Row label={`Lead tech — ${hoursMax} hrs @ $${LEAD_RATE}/hr`} value={fmt(r.leadLaborCost)}/>
+              {r.twoTechs&&<Row label={`Eric (2nd tech) — ${hoursMax} hrs @ $${ERIC_RATE_2TECH.toFixed(2)}/hr`} value={fmt(r.ericLaborCost)}/>}
+              <Row label={`Overhead — ${hoursMax} site-hrs @ $${OVERHEAD_RATE}/hr`} value={fmt(r.overheadCost)}/>
+              <Row label="Materials (at cost)" value={fmt(r.matCost)}/>
+              {r.trenchCost>0&&<Row label={`Trenching cost — ${trenchFt} ft @ $${TRENCH_COST_LF}/ft`} value={fmt(r.trenchCost)}/>}
+              <Row label="Total Cost" value={fmt(r.totalCost)} color="#e74c3c" bold/>
+            </div>
+
+            {/* Profit */}
+            <div style={{background: r.profit>0?"#0d1f14":"#2a0a0a",border:`1px solid ${r.profit>0?"#1e6b3c":"#8b1a1a"}`,borderRadius:10,padding:"16px",marginBottom:20}}>
+              <SL>PROFIT</SL>
+              <Row label="Gross Profit" value={fmt(r.profit)} color={r.profit>0?"#2ecc71":"#e74c3c"} bold/>
+              <Row label="Profit Margin" value={pct(r.profitPct)} color={r.profitPct>=50?"#2ecc71":r.profitPct>=40?"#f0d060":"#e74c3c"}/>
+              <Row label="Verbal Anchor (tell customer)" value={`${fmt(verbalAnchor)}+`} color="#f0d060"/>
+            </div>
+
+            {/* Editable title/desc */}
+            <div style={{marginBottom:16}}>
+              <FL>Line Item Title (edit if needed)</FL>
+              <input value={reviewTitle} onChange={e=>setReviewTitle(e.target.value)} style={{...inp,fontSize:14,fontWeight:600}}/>
+            </div>
+            <div style={{marginBottom:24}}>
+              <FL>Line Item Description (edit if needed)</FL>
+              <textarea value={reviewDesc} onChange={e=>setReviewDesc(e.target.value)} rows={7} style={{...inp,resize:"vertical",lineHeight:1.75}}/>
+            </div>
+
+            <button onClick={()=>setStep(3)}
+              style={{...btnBase,background:"#1e6b3c",color:"#fff"}}>
+              Ready — Copy to Jobber →
+            </button>
+          </div>
+        )}
+
+        {/* ── STEP 3: COPY ── */}
+        {step===3&&(
+          <div>
+            <div style={{background:"#0d1f14",border:"2px solid #2ecc71",borderRadius:12,padding:"20px",marginBottom:20,display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:12}}>
+              <div>
+                <div style={{fontSize:11,color:"#4a9a6a",textTransform:"uppercase",letterSpacing:"0.06em",marginBottom:4}}>Ready for Jobber</div>
+                <div style={{fontSize:42,fontWeight:800,color:"#2ecc71",letterSpacing:"-0.02em"}}>{fmt(r.customerPrice)}</div>
+                <div style={{fontSize:13,color:"#4a9a6a",marginTop:4}}>{pct(r.profitPct)} margin · {fmt(r.profit)} profit</div>
+              </div>
+              <div style={{fontSize:28}}>✓</div>
+            </div>
+
+            <SL>COPY INTO JOBBER</SL>
+            <CopyBlock label="Line Item Title" text={reviewTitle}/>
+            <CopyBlock label="Line Item Description" text={reviewDesc}/>
+            <CopyBlock label="Price" text={String(Math.round(r.customerPrice))}/>
+
+            <button onClick={reset} style={{...btnBase,background:"#1e6b3c",color:"#fff",marginTop:24}}>Start New Quote</button>
+          </div>
+        )}
+
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+</script>
+</body>
+</html>
